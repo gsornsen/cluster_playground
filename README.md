@@ -75,8 +75,8 @@ More algorithms will be added in the future.
 
 ## Example Clustering Results Summary
 
->
-[!]These were run on an Intel i7-9700k CPU with an Nvidia RTX 4090 GPU
+> [!NOTE]
+> These were run on an Intel i7-9700k CPU with an Nvidia RTX 4090 GPU
 
 
 ## Clustering Metrics Overview
@@ -101,8 +101,8 @@ The Calinski-Harabasz Index, also known as the Variance Ratio Criterion, evaluat
 
 ## Clustering Performance Results
 
->
-[!] The [Reddit Comments Uwaterloo](https://huggingface.co/datasets/alvanlii/reddit-comments-uwaterloo) dataset from Hugging Face was used for the tests below.
+> [!NOTE]
+> The [Reddit Comments Uwaterloo](https://huggingface.co/datasets/alvanlii/reddit-comments-uwaterloo) dataset from Hugging Face was used for the tests below.
 
 ### Agglomerative Clustering
 
