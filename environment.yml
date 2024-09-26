@@ -1,0 +1,17 @@
+name: rapids-24.08
+channels:
+  - rapidsai
+  - conda-forge
+  - nvidia
+dependencies:
+  - python=3.11
+  - rapids=24.08
+  - cuda-version>=12.0,<=12.5
+  - aiohttp
+  - datasets
+  - openai
+  - scikit-learn
+  - tqdm
+  - openai
+  - tqdm
+  - tabulate
