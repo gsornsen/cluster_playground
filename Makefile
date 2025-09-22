@@ -8,7 +8,7 @@ conda:
 	@echo "export PATH=$$HOME/miniconda/bin:$$PATH" >> $$HOME/.bashrc
 	@echo "Miniconda installed. Please restart your terminal or run 'source $$HOME/.bashrc' to update your PATH."
 
-env:
+env: conda
 	$$HOME/miniconda/bin/conda env create -f environment.yml
 
 update:
@@ -17,4 +17,4 @@ update:
 clean:
 	$$HOME/miniconda/bin/conda env remove -n rapids-24.08
 
-setup: env
+setup: conda env
