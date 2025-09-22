@@ -95,14 +95,40 @@ class HDBSCANCPUClusterer:
             self.outlier_scores_ = np.zeros(X.shape[0])
             return self
 
+        # For very large datasets, warn about potential memory issues
+        if X.shape[0] > 10000:
+            logger.warning(
+                f"Large dataset detected ({X.shape[0]} samples). This may require significant memory and time."
+            )
+            logger.warning(
+                "Consider using a smaller sample size if you encounter memory issues."
+            )
+
         # Perform grid search for optimal parameters
         best_params, best_labels, best_probabilities = self._grid_search(X)
 
         if best_params is None:
-            logger.warning("Grid search failed, using fallback clustering")
-            self.labels_ = np.zeros(X.shape[0], dtype=int)
-            self.probabilities_ = np.ones(X.shape[0])
-            self.outlier_scores_ = np.zeros(X.shape[0])
+            logger.warning(
+                "Grid search failed, attempting fallback clustering with default parameters"
+            )
+            try:
+                # Try basic HDBSCAN with conservative parameters
+                fallback_clusterer = HDBSCAN(
+                    min_cluster_size=min(10, X.shape[0] // 20),
+                    min_samples=3,
+                    metric="euclidean",
+                    n_jobs=1,
+                )
+                fallback_clusterer.fit(X)
+                self.labels_ = fallback_clusterer.labels_.copy()
+                self.probabilities_ = fallback_clusterer.probabilities_.copy()
+                self.outlier_scores_ = 1 - fallback_clusterer.probabilities_
+                logger.info("Fallback clustering succeeded")
+            except Exception as e:
+                logger.error(f"Fallback clustering also failed: {e}")
+                self.labels_ = np.zeros(X.shape[0], dtype=int)
+                self.probabilities_ = np.ones(X.shape[0])
+                self.outlier_scores_ = np.zeros(X.shape[0])
         else:
             logger.info(f"Best parameters: {best_params}")
             self.labels_ = best_labels
@@ -160,21 +186,42 @@ class HDBSCANCPUClusterer:
         no_improvement_limit = 3
         no_improvement_count = 0
 
-        # Determine parameter ranges based on dataset size
+        # Determine parameter ranges based on dataset size with memory safety
         n_samples = X.shape[0]
+        n_features = X.shape[1]
+
+        # Adjust parameter ranges for large datasets to prevent memory issues
+        max_reasonable_cluster_size = min(
+            n_samples // 10, 50
+        )  # Cap at 50 for memory safety
+
         min_cluster_size_range = [
-            min(mcs, n_samples // 4)
+            mcs
             for mcs in self.MIN_CLUSTER_SIZE_RANGE
-            if mcs < n_samples
+            if mcs <= max_reasonable_cluster_size and mcs < n_samples
         ]
         if not min_cluster_size_range:
-            min_cluster_size_range = [min(3, n_samples - 1)]
+            min_cluster_size_range = [min(5, n_samples // 20, n_samples - 1)]
 
-        total_iterations = len(min_cluster_size_range) * len(self.MIN_SAMPLES_RANGE)
+        # For very large datasets, reduce the search space
+        if n_samples > 5000:
+            min_cluster_size_range = min_cluster_size_range[
+                :3
+            ]  # Use only first 3 values
+            min_samples_range = self.MIN_SAMPLES_RANGE[:3]  # Use only first 3 values
+        else:
+            min_samples_range = self.MIN_SAMPLES_RANGE
+
+        logger.info(
+            f"Grid search parameters: cluster_sizes={min_cluster_size_range}, samples={min_samples_range}"
+        )
+        logger.info(f"Dataset: {n_samples} samples, {n_features} features")
+
+        total_iterations = len(min_cluster_size_range) * len(min_samples_range)
         current_iteration = 0
 
         for min_cluster_size in min_cluster_size_range:
-            for min_samples in self.MIN_SAMPLES_RANGE:
+            for min_samples in min_samples_range:
                 current_iteration += 1
 
                 # Skip invalid parameter combinations
@@ -184,15 +231,36 @@ class HDBSCANCPUClusterer:
                 iteration_start = time.time()
 
                 try:
-                    # Create and fit HDBSCAN
+                    # Validate parameters before creating clusterer
+                    if min_cluster_size >= n_samples or min_samples >= n_samples:
+                        logger.warning(
+                            f"Skipping invalid parameters: min_cluster_size={min_cluster_size}, min_samples={min_samples}"
+                        )
+                        continue
+
+                    # Memory check for large datasets
+                    memory_estimate = (n_samples * n_features * 8) / (
+                        1024**3
+                    )  # GB estimate
+                    if memory_estimate > 8:  # More than 8GB
+                        logger.warning(
+                            f"Large memory requirement estimated: {memory_estimate:.2f}GB"
+                        )
+
+                    # Create and fit HDBSCAN with additional safety
                     clusterer = HDBSCAN(
                         min_cluster_size=min_cluster_size,
                         min_samples=min_samples,
                         metric=self.metric,
                         cluster_selection_method=self.cluster_selection_method,
                         n_jobs=1,  # Single threaded for consistency
+                        algorithm="best",  # Let HDBSCAN choose best algorithm
+                        memory=None,  # Use default memory management
                     )
 
+                    logger.info(
+                        f"Fitting HDBSCAN with min_cluster_size={min_cluster_size}, min_samples={min_samples}"
+                    )
                     clusterer.fit(X)
 
                     # Calculate quality score

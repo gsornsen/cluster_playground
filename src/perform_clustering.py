@@ -79,10 +79,10 @@ async def main(
 
     # Pass additional parameters for HDBSCAN
     if algorithm.lower() == "hdbscan":
-        # Calculate reasonable min_cluster_size based on sample size
+        # Calculate reasonable min_cluster_size based on sample size with safety caps
         hdbscan_min_cluster_size = max(
-            3, sample_size // 50
-        )  # 2% of sample size, minimum 3
+            3, min(sample_size // 100, 25)
+        )  # 1% of sample size, minimum 3, maximum 25 for memory safety
         clustering_algorithm = ClusteringAlgorithmFactory.get_algorithm(
             algorithm,
             use_gpu=use_gpu,

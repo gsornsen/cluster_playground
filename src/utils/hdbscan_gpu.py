@@ -116,10 +116,28 @@ class HDBSCANGPUClusterer:
         best_params, best_labels, best_probabilities = self._grid_search(X_gpu)
 
         if best_params is None:
-            logger.warning("Grid search failed, using fallback clustering")
-            self.labels_ = cudf.Series(np.zeros(X_gpu.shape[0], dtype=int))
-            self.probabilities_ = cudf.Series(np.ones(X_gpu.shape[0]))
-            self.outlier_scores_ = cudf.Series(np.zeros(X_gpu.shape[0]))
+            logger.warning(
+                "GPU Grid search failed, attempting fallback clustering with default parameters"
+            )
+            try:
+                # Try basic cuML HDBSCAN with conservative parameters
+                fallback_clusterer = cumlHDBSCAN(
+                    min_cluster_size=min(10, X_gpu.shape[0] // 20),
+                    min_samples=3,
+                    metric="euclidean",
+                )
+                fallback_clusterer.fit(X_gpu)
+                self.labels_ = fallback_clusterer.labels_.copy()
+                self.probabilities_ = fallback_clusterer.probabilities_.copy()
+                self.outlier_scores_ = cudf.Series(
+                    1 - fallback_clusterer.probabilities_.to_numpy()
+                )
+                logger.info("GPU Fallback clustering succeeded")
+            except Exception as e:
+                logger.error(f"GPU Fallback clustering also failed: {e}")
+                self.labels_ = cudf.Series(np.zeros(X_gpu.shape[0], dtype=int))
+                self.probabilities_ = cudf.Series(np.ones(X_gpu.shape[0]))
+                self.outlier_scores_ = cudf.Series(np.zeros(X_gpu.shape[0]))
         else:
             logger.info(f"Best parameters: {best_params}")
             self.labels_ = best_labels
@@ -178,21 +196,42 @@ class HDBSCANGPUClusterer:
         no_improvement_limit = 3
         no_improvement_count = 0
 
-        # Determine parameter ranges based on dataset size
+        # Determine parameter ranges based on dataset size with memory safety
         n_samples = X_gpu.shape[0]
+        n_features = X_gpu.shape[1]
+
+        # Adjust parameter ranges for large datasets to prevent memory issues
+        max_reasonable_cluster_size = min(
+            n_samples // 10, 50
+        )  # Cap at 50 for memory safety
+
         min_cluster_size_range = [
-            min(mcs, n_samples // 4)
+            mcs
             for mcs in self.MIN_CLUSTER_SIZE_RANGE
-            if mcs < n_samples
+            if mcs <= max_reasonable_cluster_size and mcs < n_samples
         ]
         if not min_cluster_size_range:
-            min_cluster_size_range = [min(3, n_samples - 1)]
+            min_cluster_size_range = [min(5, n_samples // 20, n_samples - 1)]
 
-        total_iterations = len(min_cluster_size_range) * len(self.MIN_SAMPLES_RANGE)
+        # For very large datasets, reduce the search space
+        if n_samples > 5000:
+            min_cluster_size_range = min_cluster_size_range[
+                :3
+            ]  # Use only first 3 values
+            min_samples_range = self.MIN_SAMPLES_RANGE[:3]  # Use only first 3 values
+        else:
+            min_samples_range = self.MIN_SAMPLES_RANGE
+
+        logger.info(
+            f"GPU Grid search parameters: cluster_sizes={min_cluster_size_range}, samples={min_samples_range}"
+        )
+        logger.info(f"GPU Dataset: {n_samples} samples, {n_features} features")
+
+        total_iterations = len(min_cluster_size_range) * len(min_samples_range)
         current_iteration = 0
 
         for min_cluster_size in min_cluster_size_range:
-            for min_samples in self.MIN_SAMPLES_RANGE:
+            for min_samples in min_samples_range:
                 current_iteration += 1
 
                 # Skip invalid parameter combinations
@@ -202,7 +241,23 @@ class HDBSCANGPUClusterer:
                 iteration_start = time.time()
 
                 try:
-                    # Create and fit cuML HDBSCAN
+                    # Validate parameters before creating clusterer
+                    if min_cluster_size >= n_samples or min_samples >= n_samples:
+                        logger.warning(
+                            f"Skipping invalid GPU parameters: min_cluster_size={min_cluster_size}, min_samples={min_samples}"
+                        )
+                        continue
+
+                    # Memory check for large datasets on GPU
+                    memory_estimate = (n_samples * n_features * 4) / (
+                        1024**3
+                    )  # GB estimate (float32)
+                    if memory_estimate > 6:  # More than 6GB for GPU
+                        logger.warning(
+                            f"Large GPU memory requirement estimated: {memory_estimate:.2f}GB"
+                        )
+
+                    # Create and fit cuML HDBSCAN with additional safety
                     clusterer = cumlHDBSCAN(
                         min_cluster_size=min_cluster_size,
                         min_samples=min_samples,
@@ -210,6 +265,9 @@ class HDBSCANGPUClusterer:
                         cluster_selection_method=self.cluster_selection_method,
                     )
 
+                    logger.info(
+                        f"Fitting GPU HDBSCAN with min_cluster_size={min_cluster_size}, min_samples={min_samples}"
+                    )
                     clusterer.fit(X_gpu)
 
                     # Calculate quality score
