@@ -92,7 +92,7 @@ async def main(
             skip_grid_search=True,  # Bypass grid search for testing
         )
         print(
-            f"HDBSCAN parameters: min_cluster_size={hdbscan_min_cluster_size}, merge_clusters=True"
+            f"HDBSCAN parameters: min_cluster_size={hdbscan_min_cluster_size}, merge_clusters=True, skip_grid_search=True"
         )
     else:
         clustering_algorithm = ClusteringAlgorithmFactory.get_algorithm(

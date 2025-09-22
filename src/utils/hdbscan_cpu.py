@@ -99,6 +99,9 @@ class HDBSCANCPUClusterer:
         self.merge_threshold = merge_threshold
         self.standardize_features = standardize_features
         self.skip_grid_search = skip_grid_search
+        
+        # Debug logging
+        logger.info(f"HDBSCANCPUClusterer initialized with skip_grid_search={skip_grid_search}")
 
         # Results storage
         self.labels_ = None
@@ -153,13 +156,23 @@ class HDBSCANCPUClusterer:
 
         # Perform grid search or use direct parameters
         if self.skip_grid_search:
-            logger.info("Skipping grid search, using direct parameters")
+            logger.info("🚀 SKIPPING grid search, using direct parameters")
+            logger.info(f"Parameters: min_cluster_size={self.min_cluster_size}, min_samples={self.min_samples}")
             best_params, best_labels, best_probabilities = self._fit_direct(X, system_info)
+            logger.info(f"_fit_direct returned: params={best_params is not None}, labels={best_labels is not None}, probs={best_probabilities is not None}")
         else:
+            logger.info("📊 PERFORMING grid search for optimal parameters")
             # Perform grid search for optimal parameters with system-specific settings
             best_params, best_labels, best_probabilities = self._grid_search(X, system_info)
 
         if best_params is None:
+            if self.skip_grid_search:
+                logger.error("Direct HDBSCAN failed and skip_grid_search=True, no fallback allowed")
+                self.labels_ = np.zeros(X.shape[0], dtype=int)
+                self.probabilities_ = np.ones(X.shape[0])
+                self.outlier_scores_ = np.zeros(X.shape[0])
+                return self
+            
             logger.warning(
                 "Grid search failed, attempting fallback clustering with default parameters"
             )
@@ -288,6 +301,10 @@ class HDBSCANCPUClusterer:
             
         except Exception as e:
             logger.error(f"Direct HDBSCAN fit failed: {e}")
+            logger.error(f"HDBSCAN parameters were: {hdbscan_params}")
+            logger.error(f"Data shape: {X.shape}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return None, None, None
 
     def _grid_search(
