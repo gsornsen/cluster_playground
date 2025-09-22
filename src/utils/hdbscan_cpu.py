@@ -43,14 +43,27 @@ class HDBSCANCPUClusterer:
         }
         
         # Detect specific CPU types
-        if 'arm' in system_info['architecture'] or 'apple' in system_info['processor']:
+        processor_lower = system_info['processor'].lower()
+        if 'arm' in system_info['architecture'] or 'apple' in processor_lower:
             system_info['cpu_type'] = 'arm'
-        elif 'amd' in system_info['processor']:
+        elif 'amd' in processor_lower or 'ryzen' in processor_lower or 'epyc' in processor_lower:
             system_info['cpu_type'] = 'amd'
-        elif 'intel' in system_info['processor']:
+        elif 'intel' in processor_lower or 'xeon' in processor_lower:
             system_info['cpu_type'] = 'intel'
         else:
             system_info['cpu_type'] = 'unknown'
+            
+        # Try alternative detection methods if processor string is empty
+        if system_info['cpu_type'] == 'unknown':
+            try:
+                with open('/proc/cpuinfo', 'r') as f:
+                    cpuinfo = f.read().lower()
+                    if 'amd' in cpuinfo or 'ryzen' in cpuinfo:
+                        system_info['cpu_type'] = 'amd'
+                    elif 'intel' in cpuinfo:
+                        system_info['cpu_type'] = 'intel'
+            except:
+                pass  # Ignore if /proc/cpuinfo doesn't exist
             
         return system_info
 
@@ -151,15 +164,26 @@ class HDBSCANCPUClusterer:
                     'n_jobs': 1,
                 }
                 
-                # ARM-specific fallback parameters
-                if hasattr(self, '_system_info') and self._system_info.get('cpu_type') == 'arm':
-                    fallback_params.update({
-                        'algorithm': 'generic',
-                        'leaf_size': 40,
-                        'approx_min_span_tree': False,
-                        'min_cluster_size': min(5, X.shape[0] // 30),  # Even more conservative
-                    })
-                    logger.info("Using ARM-optimized fallback parameters")
+                # Platform-specific fallback parameters
+                if hasattr(self, '_system_info'):
+                    cpu_type = self._system_info.get('cpu_type')
+                    if cpu_type == 'arm':
+                        fallback_params.update({
+                            'algorithm': 'generic',
+                            'leaf_size': 40,
+                            'approx_min_span_tree': False,
+                            'min_cluster_size': min(5, X.shape[0] // 30),
+                        })
+                        logger.info("Using ARM-optimized fallback parameters")
+                    elif cpu_type == 'amd':
+                        fallback_params.update({
+                            'algorithm': 'brute',  # Most conservative for AMD
+                            'leaf_size': 20,  # Small leaf size for stability
+                            'approx_min_span_tree': False,
+                            'min_cluster_size': min(3, X.shape[0] // 50),  # Very conservative
+                            'memory': 'auto',
+                        })
+                        logger.info("Using AMD-optimized fallback parameters")
                 
                 fallback_clusterer = HDBSCAN(**fallback_params)
                 fallback_clusterer.fit(X)
@@ -234,15 +258,25 @@ class HDBSCANCPUClusterer:
         n_features = X.shape[1]
         
         # Platform-specific optimizations
-        if system_info and system_info.get('cpu_type') == 'arm':
+        cpu_type = system_info.get('cpu_type') if system_info else 'unknown'
+        
+        if cpu_type == 'arm':
             # ARM/Apple Silicon specific optimizations - more conservative
             logger.info("Applying ARM/Apple Silicon optimizations")
-            max_reasonable_cluster_size = min(n_samples // 15, 25)  # Even more conservative for ARM
-            size_reduction_factor = 20 if n_samples > 3000 else 10  # Smaller datasets on ARM
+            max_reasonable_cluster_size = min(n_samples // 15, 25)
+            size_reduction_factor = 20 if n_samples > 3000 else 10
+            search_threshold = 3000
+        elif cpu_type == 'amd':
+            # AMD-specific optimizations for known segfault issues
+            logger.info("Applying AMD CPU optimizations")
+            max_reasonable_cluster_size = min(n_samples // 12, 30)  # Conservative for AMD
+            size_reduction_factor = 15  # More conservative than Intel
+            search_threshold = 4000  # Lower threshold for AMD
         else:
-            # Default x86/AMD optimizations
+            # Default Intel/unknown optimizations
             max_reasonable_cluster_size = min(n_samples // 10, 50)
             size_reduction_factor = 10
+            search_threshold = 5000
 
         min_cluster_size_range = [
             mcs
@@ -252,8 +286,7 @@ class HDBSCANCPUClusterer:
         if not min_cluster_size_range:
             min_cluster_size_range = [min(5, n_samples // size_reduction_factor, n_samples - 1)]
 
-        # For very large datasets, reduce the search space more aggressively on ARM
-        search_threshold = 3000 if (system_info and system_info.get('cpu_type') == 'arm') else 5000
+        # For very large datasets, reduce the search space based on CPU type
         if n_samples > search_threshold:
             min_cluster_size_range = min_cluster_size_range[:2]  # Even smaller search space for ARM
             min_samples_range = self.MIN_SAMPLES_RANGE[:2]  # Use only first 2 values
@@ -308,16 +341,25 @@ class HDBSCANCPUClusterer:
                         'n_jobs': 1,  # Single threaded for consistency
                     }
                     
-                    # ARM/Apple Silicon specific parameters
-                    if system_info and system_info.get('cpu_type') == 'arm':
+                    # Platform-specific parameters
+                    cpu_type = system_info.get('cpu_type') if system_info else 'unknown'
+                    
+                    if cpu_type == 'arm':
                         hdbscan_params.update({
                             'algorithm': 'generic',  # More stable on ARM
                             'leaf_size': 40,  # Larger leaf size for ARM efficiency
                             'approx_min_span_tree': False,  # Disable approximation for stability
                         })
+                    elif cpu_type == 'amd':
+                        hdbscan_params.update({
+                            'algorithm': 'ball_tree',  # Often more stable than 'best' on AMD
+                            'leaf_size': 30,  # Conservative leaf size for AMD
+                            'approx_min_span_tree': False,  # Disable approximation for stability
+                            'memory': 'auto',  # Let HDBSCAN manage memory
+                        })
                     else:
                         hdbscan_params.update({
-                            'algorithm': 'best',  # Let HDBSCAN choose for x86
+                            'algorithm': 'best',  # Let HDBSCAN choose for Intel/unknown
                         })
                     
                     clusterer = HDBSCAN(**hdbscan_params)
