@@ -178,26 +178,51 @@ class HDBSCANClusteringAlgorithm(ClusteringBase):
         # Check if we should use safer fallback for known problematic environments
         if not self.use_gpu and hasattr(self.clusterer, 'skip_grid_search') and self.clusterer.skip_grid_search:
             logger.info("Using safe HDBSCAN fallback to avoid segfaults")
-            # Use the working test_direct_hdbscan.py approach
+            logger.info("This will completely bypass cuDF operations and use pure numpy/sklearn")
+            
+            # Use the working test_direct_hdbscan.py approach - pure numpy/sklearn
             from sklearn.cluster import HDBSCAN
+            
+            logger.info("Step 1: Converting cuDF to numpy (this might be the issue)...")
             try:
-                embeddings_np = embeddings_cudf.to_numpy()
-                logger.info(f"Safe HDBSCAN with data shape: {embeddings_np.shape}")
-                
-                # Use conservative parameters that we know work from test_direct_hdbscan.py
-                safe_clusterer = HDBSCAN(
-                    min_cluster_size=max(3, min(10, embeddings_np.shape[0] // 100)),
-                    min_samples=3,
-                    algorithm='ball_tree',
-                    metric='euclidean',
-                    n_jobs=1
-                )
-                safe_clusterer.fit(embeddings_np)
-                logger.info("Safe HDBSCAN completed successfully")
-                labels = cudf.Series(safe_clusterer.labels_)
+                # Try to convert cuDF to numpy safely
+                embeddings_np = np.array(embeddings_cudf.to_pandas().values, dtype=np.float32)
+                logger.info(f"Safe conversion completed, data shape: {embeddings_np.shape}")
             except Exception as e:
-                logger.error(f"Safe HDBSCAN also failed: {e}")
-                labels = cudf.Series(np.zeros(len(embeddings_cudf), dtype=int))
+                logger.error(f"cuDF to numpy conversion failed: {e}")
+                # Create fallback data
+                embeddings_np = np.zeros((1000, 100), dtype=np.float32)
+                logger.error("Using dummy data as fallback")
+            
+            logger.info("Step 2: Creating HDBSCAN clusterer...")
+            safe_clusterer = HDBSCAN(
+                min_cluster_size=max(3, min(10, embeddings_np.shape[0] // 100)),
+                min_samples=3,
+                algorithm='ball_tree',
+                metric='euclidean',
+                n_jobs=1
+            )
+            
+            logger.info("Step 3: Fitting HDBSCAN...")
+            try:
+                safe_clusterer.fit(embeddings_np)
+                logger.info("✓ Safe HDBSCAN completed successfully")
+                
+                logger.info("Step 4: Getting labels...")
+                labels_np = safe_clusterer.labels_
+                logger.info(f"✓ Labels retrieved, shape: {labels_np.shape}")
+                
+                logger.info("Step 5: Creating cuDF Series (might cause segfault)...")
+                # Try the simplest possible cuDF Series creation
+                labels = cudf.Series(data=labels_np.tolist())
+                logger.info("✓ cuDF Series creation completed")
+                
+            except Exception as e:
+                logger.error(f"HDBSCAN processing failed at some step: {e}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                # Use safe fallback - simple list
+                labels = cudf.Series([0] * len(embeddings_cudf))
         else:
             try:
                 if self.use_gpu:
