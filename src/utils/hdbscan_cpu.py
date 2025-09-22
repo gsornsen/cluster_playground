@@ -8,6 +8,8 @@ import time
 import logging
 import numpy as np
 import pandas as pd
+import platform
+import psutil
 from typing import Dict, Optional, Tuple, Union
 from sklearn.cluster import HDBSCAN
 from sklearn.metrics import pairwise_distances, calinski_harabasz_score
@@ -21,11 +23,36 @@ logger = logging.getLogger(__name__)
 class HDBSCANCPUClusterer:
     """
     CPU-optimized HDBSCAN clustering implementation with grid search and quality metrics.
+    
+    Includes platform-specific optimizations for ARM (Apple Silicon) and AMD systems.
     """
 
     # Parameter ranges for grid search
     MIN_SAMPLES_RANGE = [1, 3, 6, 9, 11]
     MIN_CLUSTER_SIZE_RANGE = [3, 5, 10, 15, 20]
+    
+    @staticmethod
+    def _detect_system_info():
+        """Detect system architecture and CPU details for optimization."""
+        system_info = {
+            'architecture': platform.machine().lower(),
+            'processor': platform.processor().lower(),
+            'system': platform.system().lower(),
+            'cpu_count': psutil.cpu_count(logical=False),
+            'logical_cpu_count': psutil.cpu_count(logical=True),
+        }
+        
+        # Detect specific CPU types
+        if 'arm' in system_info['architecture'] or 'apple' in system_info['processor']:
+            system_info['cpu_type'] = 'arm'
+        elif 'amd' in system_info['processor']:
+            system_info['cpu_type'] = 'amd'
+        elif 'intel' in system_info['processor']:
+            system_info['cpu_type'] = 'intel'
+        else:
+            system_info['cpu_type'] = 'unknown'
+            
+        return system_info
 
     def __init__(
         self,
@@ -78,7 +105,11 @@ class HDBSCANCPUClusterer:
             self: Fitted clusterer instance
         """
         start_time = time.time()
-
+        
+        # Detect system for platform-specific optimizations
+        system_info = self._detect_system_info()
+        self._system_info = system_info  # Store for fallback use
+        logger.info(f"Detected system: {system_info['cpu_type']} ({system_info['architecture']})")
         logger.info(
             f"Starting HDBSCAN clustering on {X.shape[0]} samples with {X.shape[1]} features"
         )
@@ -104,8 +135,8 @@ class HDBSCANCPUClusterer:
                 "Consider using a smaller sample size if you encounter memory issues."
             )
 
-        # Perform grid search for optimal parameters
-        best_params, best_labels, best_probabilities = self._grid_search(X)
+        # Perform grid search for optimal parameters with system-specific settings
+        best_params, best_labels, best_probabilities = self._grid_search(X, system_info)
 
         if best_params is None:
             logger.warning(
@@ -113,12 +144,24 @@ class HDBSCANCPUClusterer:
             )
             try:
                 # Try basic HDBSCAN with conservative parameters
-                fallback_clusterer = HDBSCAN(
-                    min_cluster_size=min(10, X.shape[0] // 20),
-                    min_samples=3,
-                    metric="euclidean",
-                    n_jobs=1,
-                )
+                fallback_params = {
+                    'min_cluster_size': min(10, X.shape[0] // 20),
+                    'min_samples': 3,
+                    'metric': "euclidean",
+                    'n_jobs': 1,
+                }
+                
+                # ARM-specific fallback parameters
+                if hasattr(self, '_system_info') and self._system_info.get('cpu_type') == 'arm':
+                    fallback_params.update({
+                        'algorithm': 'generic',
+                        'leaf_size': 40,
+                        'approx_min_span_tree': False,
+                        'min_cluster_size': min(5, X.shape[0] // 30),  # Even more conservative
+                    })
+                    logger.info("Using ARM-optimized fallback parameters")
+                
+                fallback_clusterer = HDBSCAN(**fallback_params)
                 fallback_clusterer.fit(X)
                 self.labels_ = fallback_clusterer.labels_.copy()
                 self.probabilities_ = fallback_clusterer.probabilities_.copy()
@@ -163,7 +206,7 @@ class HDBSCANCPUClusterer:
         return self
 
     def _grid_search(
-        self, X: np.ndarray
+        self, X: np.ndarray, system_info: Dict = None
     ) -> Tuple[Optional[Dict], Optional[np.ndarray], Optional[np.ndarray]]:
         """
         Perform grid search to find optimal HDBSCAN parameters.
@@ -189,11 +232,17 @@ class HDBSCANCPUClusterer:
         # Determine parameter ranges based on dataset size with memory safety
         n_samples = X.shape[0]
         n_features = X.shape[1]
-
-        # Adjust parameter ranges for large datasets to prevent memory issues
-        max_reasonable_cluster_size = min(
-            n_samples // 10, 50
-        )  # Cap at 50 for memory safety
+        
+        # Platform-specific optimizations
+        if system_info and system_info.get('cpu_type') == 'arm':
+            # ARM/Apple Silicon specific optimizations - more conservative
+            logger.info("Applying ARM/Apple Silicon optimizations")
+            max_reasonable_cluster_size = min(n_samples // 15, 25)  # Even more conservative for ARM
+            size_reduction_factor = 20 if n_samples > 3000 else 10  # Smaller datasets on ARM
+        else:
+            # Default x86/AMD optimizations
+            max_reasonable_cluster_size = min(n_samples // 10, 50)
+            size_reduction_factor = 10
 
         min_cluster_size_range = [
             mcs
@@ -201,14 +250,17 @@ class HDBSCANCPUClusterer:
             if mcs <= max_reasonable_cluster_size and mcs < n_samples
         ]
         if not min_cluster_size_range:
-            min_cluster_size_range = [min(5, n_samples // 20, n_samples - 1)]
+            min_cluster_size_range = [min(5, n_samples // size_reduction_factor, n_samples - 1)]
 
-        # For very large datasets, reduce the search space
-        if n_samples > 5000:
-            min_cluster_size_range = min_cluster_size_range[
-                :3
-            ]  # Use only first 3 values
-            min_samples_range = self.MIN_SAMPLES_RANGE[:3]  # Use only first 3 values
+        # For very large datasets, reduce the search space more aggressively on ARM
+        search_threshold = 3000 if (system_info and system_info.get('cpu_type') == 'arm') else 5000
+        if n_samples > search_threshold:
+            min_cluster_size_range = min_cluster_size_range[:2]  # Even smaller search space for ARM
+            min_samples_range = self.MIN_SAMPLES_RANGE[:2]  # Use only first 2 values
+        elif n_samples > 1000 and system_info and system_info.get('cpu_type') == 'arm':
+            # Additional reduction for ARM at medium sizes
+            min_cluster_size_range = min_cluster_size_range[:3]
+            min_samples_range = self.MIN_SAMPLES_RANGE[:3]
         else:
             min_samples_range = self.MIN_SAMPLES_RANGE
 
@@ -247,16 +299,28 @@ class HDBSCANCPUClusterer:
                             f"Large memory requirement estimated: {memory_estimate:.2f}GB"
                         )
 
-                    # Create and fit HDBSCAN with additional safety
-                    clusterer = HDBSCAN(
-                        min_cluster_size=min_cluster_size,
-                        min_samples=min_samples,
-                        metric=self.metric,
-                        cluster_selection_method=self.cluster_selection_method,
-                        n_jobs=1,  # Single threaded for consistency
-                        algorithm="best",  # Let HDBSCAN choose best algorithm
-                        memory=None,  # Use default memory management
-                    )
+                    # Create HDBSCAN with platform-specific optimizations
+                    hdbscan_params = {
+                        'min_cluster_size': min_cluster_size,
+                        'min_samples': min_samples,
+                        'metric': self.metric,
+                        'cluster_selection_method': self.cluster_selection_method,
+                        'n_jobs': 1,  # Single threaded for consistency
+                    }
+                    
+                    # ARM/Apple Silicon specific parameters
+                    if system_info and system_info.get('cpu_type') == 'arm':
+                        hdbscan_params.update({
+                            'algorithm': 'generic',  # More stable on ARM
+                            'leaf_size': 40,  # Larger leaf size for ARM efficiency
+                            'approx_min_span_tree': False,  # Disable approximation for stability
+                        })
+                    else:
+                        hdbscan_params.update({
+                            'algorithm': 'best',  # Let HDBSCAN choose for x86
+                        })
+                    
+                    clusterer = HDBSCAN(**hdbscan_params)
 
                     logger.info(
                         f"Fitting HDBSCAN with min_cluster_size={min_cluster_size}, min_samples={min_samples}"

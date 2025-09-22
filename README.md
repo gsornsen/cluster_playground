@@ -163,6 +163,19 @@ If you encounter memory issues or segmentation faults with large datasets:
 2. Use CPU implementation first: Remove `--use_gpu` flag
 3. Monitor system memory usage during clustering
 
+#### ARM/Apple Silicon Compatibility:
+The implementation includes specific optimizations for ARM-based systems (Apple Silicon):
+- **Automatic Detection**: System architecture is detected automatically
+- **Conservative Parameters**: More conservative clustering parameters for ARM stability
+- **Algorithm Selection**: Uses `generic` algorithm instead of `best` for better compatibility
+- **Reduced Search Space**: Smaller grid search space to prevent memory issues
+- **Optimized Leaf Size**: Larger leaf size (40) for ARM efficiency
+
+**Recommended ARM Settings:**
+- Start with smaller sample sizes (< 3,000 samples)
+- CPU implementation is often more stable than GPU on Apple Silicon
+- Monitor memory usage as ARM systems may have different memory patterns
+
 
 ## Example Clustering Results Summary
 
