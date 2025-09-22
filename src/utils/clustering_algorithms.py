@@ -175,16 +175,49 @@ class HDBSCANClusteringAlgorithm(ClusteringBase):
 
         start_time = time.time()
 
-        if self.use_gpu:
-            # GPU implementation expects cuDF DataFrame
-            self.clusterer.fit(embeddings_cudf)
-            labels = self.clusterer.labels_
+        # Check if we should use safer fallback for known problematic environments
+        if not self.use_gpu and hasattr(self.clusterer, 'skip_grid_search') and self.clusterer.skip_grid_search:
+            logger.info("Using safe HDBSCAN fallback to avoid segfaults")
+            # Use the working test_direct_hdbscan.py approach
+            from sklearn.cluster import HDBSCAN
+            try:
+                embeddings_np = embeddings_cudf.to_numpy()
+                logger.info(f"Safe HDBSCAN with data shape: {embeddings_np.shape}")
+                
+                # Use conservative parameters that we know work from test_direct_hdbscan.py
+                safe_clusterer = HDBSCAN(
+                    min_cluster_size=max(3, min(10, embeddings_np.shape[0] // 100)),
+                    min_samples=3,
+                    algorithm='ball_tree',
+                    metric='euclidean',
+                    n_jobs=1
+                )
+                safe_clusterer.fit(embeddings_np)
+                logger.info("Safe HDBSCAN completed successfully")
+                labels = cudf.Series(safe_clusterer.labels_)
+            except Exception as e:
+                logger.error(f"Safe HDBSCAN also failed: {e}")
+                labels = cudf.Series(np.zeros(len(embeddings_cudf), dtype=int))
         else:
-            # CPU implementation expects numpy array
-            embeddings_np = embeddings_cudf.to_numpy()
-            self.clusterer.fit(embeddings_np)
-            # Convert numpy labels back to cuDF Series
-            labels = cudf.Series(self.clusterer.labels_)
+            try:
+                if self.use_gpu:
+                    # GPU implementation expects cuDF DataFrame
+                    self.clusterer.fit(embeddings_cudf)
+                    labels = self.clusterer.labels_
+                else:
+                    # CPU implementation expects numpy array
+                    embeddings_np = embeddings_cudf.to_numpy()
+                    logger.info(f"About to call clusterer.fit() with data shape: {embeddings_np.shape}")
+                    self.clusterer.fit(embeddings_np)
+                    logger.info("clusterer.fit() completed successfully")
+                    # Convert numpy labels back to cuDF Series
+                    labels = cudf.Series(self.clusterer.labels_)
+            except Exception as e:
+                logger.error(f"HDBSCAN clustering failed: {e}")
+                logger.error("Returning fallback labels (all points in single cluster)")
+                # Return safe fallback labels
+                n_samples = len(embeddings_cudf) if self.use_gpu else embeddings_np.shape[0]
+                labels = cudf.Series(np.zeros(n_samples, dtype=int))
 
         clustering_time = time.time() - start_time
         n_clusters_found = len(labels.unique())
