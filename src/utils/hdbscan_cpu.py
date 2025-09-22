@@ -169,9 +169,8 @@ class HDBSCANCPUClusterer:
                     cpu_type = self._system_info.get('cpu_type')
                     if cpu_type == 'arm':
                         fallback_params.update({
-                            'algorithm': 'generic',
+                            'algorithm': 'ball_tree',
                             'leaf_size': 40,
-                            'approx_min_span_tree': False,
                             'min_cluster_size': min(5, X.shape[0] // 30),
                         })
                         logger.info("Using ARM-optimized fallback parameters")
@@ -179,9 +178,7 @@ class HDBSCANCPUClusterer:
                         fallback_params.update({
                             'algorithm': 'brute',  # Most conservative for AMD
                             'leaf_size': 20,  # Small leaf size for stability
-                            'approx_min_span_tree': False,
                             'min_cluster_size': min(3, X.shape[0] // 50),  # Very conservative
-                            'memory': 'auto',
                         })
                         logger.info("Using AMD-optimized fallback parameters")
                 
@@ -346,20 +343,17 @@ class HDBSCANCPUClusterer:
                     
                     if cpu_type == 'arm':
                         hdbscan_params.update({
-                            'algorithm': 'generic',  # More stable on ARM
+                            'algorithm': 'ball_tree',  # More stable on ARM
                             'leaf_size': 40,  # Larger leaf size for ARM efficiency
-                            'approx_min_span_tree': False,  # Disable approximation for stability
                         })
                     elif cpu_type == 'amd':
                         hdbscan_params.update({
-                            'algorithm': 'ball_tree',  # Often more stable than 'best' on AMD
+                            'algorithm': 'ball_tree',  # Often more stable than 'auto' on AMD
                             'leaf_size': 30,  # Conservative leaf size for AMD
-                            'approx_min_span_tree': False,  # Disable approximation for stability
-                            'memory': 'auto',  # Let HDBSCAN manage memory
                         })
                     else:
                         hdbscan_params.update({
-                            'algorithm': 'best',  # Let HDBSCAN choose for Intel/unknown
+                            'algorithm': 'auto',  # Let HDBSCAN choose for Intel/unknown
                         })
                     
                     clusterer = HDBSCAN(**hdbscan_params)

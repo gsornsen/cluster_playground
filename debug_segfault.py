@@ -26,7 +26,7 @@ def test_basic_hdbscan():
         clusterer = HDBSCAN(
             min_cluster_size=5,
             min_samples=3,
-            algorithm='generic',
+            algorithm='ball_tree',
             metric='euclidean',
             n_jobs=1
         )
@@ -56,7 +56,7 @@ def test_memory_patterns():
             clusterer = HDBSCAN(
                 min_cluster_size=max(3, size // 50),
                 min_samples=3,
-                algorithm='generic',
+                algorithm='ball_tree',
                 metric='euclidean',
                 n_jobs=1
             )
@@ -77,7 +77,7 @@ def test_algorithm_backends():
     
     X, _ = make_blobs(n_samples=500, centers=5, random_state=42)
     
-    algorithms = ['auto', 'ball_tree', 'kd_tree', 'brute', 'generic']
+    algorithms = ['auto', 'ball_tree', 'kd_tree', 'brute']
     
     for algo in algorithms:
         try:
@@ -114,7 +114,7 @@ def test_parameter_combinations():
         try:
             logger.info(f"Testing params {i+1}: {params}")
             clusterer = HDBSCAN(
-                algorithm='generic',
+                algorithm='ball_tree',
                 metric='euclidean',
                 n_jobs=1,
                 **params
@@ -142,7 +142,7 @@ def test_large_feature_space():
             clusterer = HDBSCAN(
                 min_cluster_size=10,
                 min_samples=3,
-                algorithm='generic',
+                algorithm='ball_tree',
                 metric='euclidean',
                 n_jobs=1
             )
