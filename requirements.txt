@@ -1,7 +1,12 @@
 aiohttp
 cudf
 cuml
+cupy
 datasets
+hdbscan>=0.8.29
+numpy
 openai
-scikit-learn
+pandas
+scikit-learn>=1.0.0
+tabulate
 tqdm
