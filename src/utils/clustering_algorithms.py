@@ -110,6 +110,7 @@ class HDBSCANClusteringAlgorithm(ClusteringBase):
         min_samples: int = None,
         merge_clusters: bool = False,
         standardize_features: bool = True,
+        skip_grid_search: bool = False,
     ):
         """
         Initialize HDBSCAN algorithm.
@@ -120,12 +121,14 @@ class HDBSCANClusteringAlgorithm(ClusteringBase):
             min_samples: Minimum samples for core points
             merge_clusters: Whether to merge similar clusters
             standardize_features: Whether to standardize input features
+            skip_grid_search: Skip grid search optimization
         """
         self.use_gpu = use_gpu
         self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples
         self.merge_clusters = merge_clusters
         self.standardize_features = standardize_features
+        self.skip_grid_search = skip_grid_search
 
         # Initialize the appropriate clusterer
         if self.use_gpu:
@@ -141,6 +144,7 @@ class HDBSCANClusteringAlgorithm(ClusteringBase):
                 min_samples=min_samples,
                 merge_clusters=merge_clusters,
                 standardize_features=standardize_features,
+                skip_grid_search=skip_grid_search,
             )
 
         logger.info(

@@ -89,6 +89,7 @@ async def main(
             min_cluster_size=hdbscan_min_cluster_size,
             merge_clusters=True,
             standardize_features=True,
+            skip_grid_search=True,  # Bypass grid search for testing
         )
         print(
             f"HDBSCAN parameters: min_cluster_size={hdbscan_min_cluster_size}, merge_clusters=True"

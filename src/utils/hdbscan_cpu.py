@@ -76,6 +76,7 @@ class HDBSCANCPUClusterer:
         merge_clusters: bool = False,
         merge_threshold: float = 0.95,
         standardize_features: bool = True,
+        skip_grid_search: bool = False,
     ):
         """
         Initialize HDBSCAN clusterer.
@@ -88,14 +89,16 @@ class HDBSCANCPUClusterer:
             merge_clusters: Whether to merge similar clusters
             merge_threshold: Cosine similarity threshold for merging
             standardize_features: Whether to standardize features before clustering
+            skip_grid_search: Skip grid search and use provided parameters directly
         """
         self.min_cluster_size = min_cluster_size
-        self.min_samples = min_samples
+        self.min_samples = min_samples or 3
         self.cluster_selection_method = cluster_selection_method
         self.metric = metric
         self.merge_clusters = merge_clusters
         self.merge_threshold = merge_threshold
         self.standardize_features = standardize_features
+        self.skip_grid_search = skip_grid_search
 
         # Results storage
         self.labels_ = None
@@ -148,8 +151,13 @@ class HDBSCANCPUClusterer:
                 "Consider using a smaller sample size if you encounter memory issues."
             )
 
-        # Perform grid search for optimal parameters with system-specific settings
-        best_params, best_labels, best_probabilities = self._grid_search(X, system_info)
+        # Perform grid search or use direct parameters
+        if self.skip_grid_search:
+            logger.info("Skipping grid search, using direct parameters")
+            best_params, best_labels, best_probabilities = self._fit_direct(X, system_info)
+        else:
+            # Perform grid search for optimal parameters with system-specific settings
+            best_params, best_labels, best_probabilities = self._grid_search(X, system_info)
 
         if best_params is None:
             logger.warning(
@@ -225,6 +233,62 @@ class HDBSCANCPUClusterer:
         )
 
         return self
+
+    def _fit_direct(
+        self, X: np.ndarray, system_info: Dict = None
+    ) -> Tuple[Optional[Dict], Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Fit HDBSCAN directly without grid search using provided parameters.
+        
+        Args:
+            X: Input data matrix
+            system_info: System information for platform-specific optimizations
+            
+        Returns:
+            Tuple of (params, labels, probabilities)
+        """
+        logger.info(f"Direct HDBSCAN fit with min_cluster_size={self.min_cluster_size}, min_samples={self.min_samples}")
+        
+        try:
+            # Platform-specific parameters
+            cpu_type = system_info.get('cpu_type') if system_info else 'unknown'
+            
+            hdbscan_params = {
+                'min_cluster_size': self.min_cluster_size,
+                'min_samples': self.min_samples,
+                'metric': self.metric,
+                'cluster_selection_method': self.cluster_selection_method,
+                'n_jobs': 1,
+            }
+            
+            if cpu_type == 'arm':
+                hdbscan_params.update({
+                    'algorithm': 'ball_tree',
+                    'leaf_size': 40,
+                })
+            elif cpu_type == 'amd':
+                hdbscan_params.update({
+                    'algorithm': 'ball_tree',
+                    'leaf_size': 30,
+                })
+            else:
+                hdbscan_params.update({
+                    'algorithm': 'auto',
+                })
+            
+            clusterer = HDBSCAN(**hdbscan_params)
+            clusterer.fit(X)
+            
+            params = {
+                'min_cluster_size': self.min_cluster_size,
+                'min_samples': self.min_samples,
+            }
+            
+            return params, clusterer.labels_.copy(), clusterer.probabilities_.copy()
+            
+        except Exception as e:
+            logger.error(f"Direct HDBSCAN fit failed: {e}")
+            return None, None, None
 
     def _grid_search(
         self, X: np.ndarray, system_info: Dict = None
